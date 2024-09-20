@@ -7,11 +7,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -50,8 +48,21 @@ type deets struct {
 	ProcessName   string
 	ProcessPID    uint32
 }
+type pathKey struct {
+	Pid    uint32
+	Mnt_ns uint32
+	Path   [256]byte
+}
 
 var cmap map[nskey]deets
+
+func newPathKey(pid uint32, mnt_ns uint32, path string) pathKey {
+	var key pathKey
+	key.Pid = pid
+	key.Mnt_ns = mnt_ns
+	copy(key.Path[:], path)
+	return key
+}
 
 func main() {
 
@@ -60,6 +71,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	// populatemap()
 
 	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
 	if err != nil {
@@ -105,17 +117,19 @@ func main() {
 	}
 	defer objs.Close()
 
-	// kpc, err := link.AttachLSM(link.LSMOptions{Program: objs.EnforceSoconn})
-	// if err != nil {
-	// 	log.Fatalf("opening kprobe: %s", err)
-	// }
-	// defer kpc.Close()
-
-	kpa, err := link.AttachLSM(link.LSMOptions{Program: objs.EnforceSoacc})
+	kpa, err := link.AttachLSM(link.LSMOptions{Program: objs.EnforceBprm})
+	if err != nil {
+		log.Fatalf("opening kprobe: %s", err)
+	}
+	//execve execveat
+	kpa1, err := link.Kprobe("sys_execve", objs.KprobeExecve, &link.KprobeOptions{})
 	if err != nil {
 		log.Fatalf("opening kprobe: %s", err)
 	}
 	defer kpa.Close()
+	defer kpa1.Close()
+
+	// create container map for nginx contianer and inner map
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
@@ -160,14 +174,6 @@ func main() {
 			ipBytes := make([]byte, 4)
 			// Fill the byte slice with the IP address in big-endian format.
 			binary.LittleEndian.PutUint32(ipBytes, event.Daddr)
-
-			// Convert the byte slice into an IP object.
-			ipAddr := net.IP(ipBytes)
-			b, err := json.MarshalIndent(val, "", "  ")
-			if err != nil {
-				fmt.Println("error:", err)
-			}
-			fmt.Print(string(b), ipAddr.String())
 
 		}
 

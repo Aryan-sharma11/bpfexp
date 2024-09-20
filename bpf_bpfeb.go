@@ -13,6 +13,15 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type bpfArgKey struct {
+	Pid  uint32
+	Tgid uint32
+}
+
+type bpfArgVal struct{ ArgsArray [10][20]int8 }
+
+type bpfBufsT struct{ Buf [32768]uint8 }
+
 // loadBpf returns the embedded CollectionSpec for bpf.
 func loadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
@@ -54,15 +63,19 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	EnforceSoacc  *ebpf.ProgramSpec `ebpf:"enforce_soacc"`
-	EnforceSoconn *ebpf.ProgramSpec `ebpf:"enforce_soconn"`
+	EnforceBprm  *ebpf.ProgramSpec `ebpf:"enforce_bprm"`
+	KprobeExecve *ebpf.ProgramSpec `ebpf:"kprobe__execve"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Bufs       *ebpf.MapSpec `ebpf:"bufs"`
+	BufsOffset *ebpf.MapSpec `ebpf:"bufs_offset"`
+	CountMap   *ebpf.MapSpec `ebpf:"count_map"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	Values     *ebpf.MapSpec `ebpf:"values"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -84,12 +97,20 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	Bufs       *ebpf.Map `ebpf:"bufs"`
+	BufsOffset *ebpf.Map `ebpf:"bufs_offset"`
+	CountMap   *ebpf.Map `ebpf:"count_map"`
+	Events     *ebpf.Map `ebpf:"events"`
+	Values     *ebpf.Map `ebpf:"values"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.Bufs,
+		m.BufsOffset,
+		m.CountMap,
 		m.Events,
+		m.Values,
 	)
 }
 
@@ -97,14 +118,14 @@ func (m *bpfMaps) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	EnforceSoacc  *ebpf.Program `ebpf:"enforce_soacc"`
-	EnforceSoconn *ebpf.Program `ebpf:"enforce_soconn"`
+	EnforceBprm  *ebpf.Program `ebpf:"enforce_bprm"`
+	KprobeExecve *ebpf.Program `ebpf:"kprobe__execve"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
-		p.EnforceSoacc,
-		p.EnforceSoconn,
+		p.EnforceBprm,
+		p.KprobeExecve,
 	)
 }
 

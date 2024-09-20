@@ -1,0 +1,68 @@
+// package main
+
+// import (
+// 	"fmt"
+// 	"log"
+
+// 	"github.com/cilium/ebpf"
+// 	"github.com/cilium/ebpf/rlimit"
+// )
+
+// // Define a struct for the outer key (okey)
+// type O_key struct {
+// 	PidNS uint32
+// 	MntNS uint32
+// }
+
+// func populatemap() {
+// 	// Allow the current process to lock memory for eBPF resources
+// 	if err := rlimit.RemoveMemlock(); err != nil {
+// 		log.Fatalf("failed to remove memlock: %v", err)
+// 	}
+
+// 	// Create a map spec for the hash of maps
+// 	outerMapSpec := &ebpf.MapSpec{
+// 		Type:       ebpf.HashOfMaps,
+// 		KeySize:    uint32(8), // Adjust this based on your OuterKey struct size
+// 		ValueSize:  uint32(4), // Size of inner map index
+// 		MaxEntries: 256,
+// 		Pinning:    ebpf.PinByName,
+// 	}
+
+// 	// Create kubearmor_containers map
+// 	kubearmorContainers, err := ebpf.NewMap(outerMapSpec)
+// 	if err != nil {
+// 		log.Fatalf("failed to create kubearmor_containers map: %v", err)
+// 	}
+// 	defer kubearmorContainers.Close()
+
+// 	// Create kubearmor_arguments map
+// 	kubearmorArguments, err := ebpf.NewMap(outerMapSpec)
+// 	if err != nil {
+// 		log.Fatalf("failed to create kubearmor_arguments map: %v", err)
+// 	}
+// 	defer kubearmorArguments.Close()
+
+// 	// Define the key (okey) for map insertion
+// 	okey := O_key{
+// 		MntNS: 4026533421, // Example values
+// 		PidNS: 4026533421,
+// 	}
+
+// 	// Define the value (index to an inner map, for example)
+// 	var innerMapID uint32 = 1 // Example inner map ID
+
+// 	// Insert the key-value pair into the kubearmor_containers map
+// 	err = kubearmorContainers.Put(&okey, innerMapID)
+// 	if err != nil {
+// 		log.Fatalf("failed to insert into kubearmor_containers map: %v", err)
+// 	}
+
+// 	// Insert the key-value pair into the kubearmor_arguments map
+// 	err = kubearmorArguments.Put(&okey, innerMapID)
+// 	if err != nil {
+// 		log.Fatalf("failed to insert into kubearmor_arguments map: %v", err)
+// 	}
+
+// 	fmt.Println("Maps populated successfully")
+// }
