@@ -5,28 +5,29 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
+	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
-	"github.com/cilium/ebpf/rlimit"
-	"golang.org/x/sys/unix"
-
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf sample.bpf.c -target bpfel -type event -- -I/usr/include/ -O2 -g -D__TARGET_ARCH_x86 -fno-stack-protector
 
+type BPFEnforcer struct {
+	InnerMapSpec *ebpf.MapSpec
+	// InnerMapSpec            *ebpf.MapSpec
+	BPFPathMap *ebpf.Map
+	BPFArgsMap *ebpf.Map
+	obj        bpfObjects
+}
 type eventBPF struct {
 	Pid   uint32
 	PidNS uint32
@@ -36,105 +37,108 @@ type eventBPF struct {
 }
 
 // nskey Structure acts as an Identifier for containers
-type nskey struct {
-	PidNS uint32
-	MntNS uint32
+
+type mapKey struct {
+	Pid   uint32
+	Mntid uint32
+	Path  [255]byte
+	_     byte
 }
 
-type deets struct {
-	ContainerID   string
-	ContainerName string
-	ContainerPID  string
-	ProcessName   string
-	ProcessPID    uint32
-}
-type pathKey struct {
-	Pid    uint32
-	Mnt_ns uint32
-	Path   [256]byte
-}
-
-var cmap map[nskey]deets
-
-func newPathKey(pid uint32, mnt_ns uint32, path string) pathKey {
-	var key pathKey
+func newPathKey(pid uint32, mnt_ns uint32, path string) mapKey {
+	var key mapKey
 	key.Pid = pid
-	key.Mnt_ns = mnt_ns
+	key.Mntid = mnt_ns
 	copy(key.Path[:], path)
+	// if len(path) < 255 {
+	// 	key.Path[len(path)] = 0 // Manually add null termination
+	// }
 	return key
 }
 
 func main() {
-
-	ctx := context.Background()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		panic(err)
-	}
+	y := uint32(unsafe.Sizeof(mapKey{}))
 	// populatemap()
-
-	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
+	be := BPFEnforcer{}
+	var err error
+	be.BPFPathMap, err = ebpf.NewMapWithOptions(&ebpf.MapSpec{
+		Type:       ebpf.Hash,
+		KeySize:    y,
+		ValueSize:  1,
+		MaxEntries: 100,
+		Name:       "path_map",
+		Pinning:    ebpf.PinByName,
+	}, ebpf.MapOptions{
+		PinPath: "/sys/fs/bpf/",
+	})
 	if err != nil {
-		panic(err)
+		fmt.Println("error loading path_map ", err)
 	}
 
-	cmap = make(map[nskey]deets)
+	be.BPFArgsMap, err = ebpf.NewMapWithOptions(&ebpf.MapSpec{
+		Type:       ebpf.Hash,
+		KeySize:    y,
+		ValueSize:  1,
+		MaxEntries: 100,
+		Name:       "args_map",
+		Pinning:    ebpf.PinByName,
+	}, ebpf.MapOptions{
+		PinPath: "/sys/fs/bpf/",
+	})
+	if err != nil {
+		fmt.Println("error loading args_map ", err)
+	}
 
-	for _, container := range containers {
-		inspect, _ := cli.ContainerInspect(context.Background(), container.ID)
-		c := deets{}
+	if err := loadBpfObjects(&be.obj, &ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{
+			PinPath: "/sys/fs/bpf/",
+		},
+	}); err != nil {
+		fmt.Println("error loading objects", err)
+	}
+	keyPath := newPathKey(uint32(4026532833), uint32(4026533709), "/usr/bin/apt")
 
-		c.ContainerID = inspect.ID
-		c.ContainerName = strings.TrimLeft(inspect.Name, "/")
-		pid := strconv.Itoa(inspect.State.Pid)
-		c.ContainerPID = pid
+	// keyArgs := newPathKey(uint32(4026532833), uint32(4026533709), "update")
+	valPath := uint8(1)
+	var valArgs uint8 = 1
+	//pid = 4026532833  mntid = 4026533709
 
-		key := nskey{}
+	allowedArgs := [3]string{"-u", "-m", "helloworld"}
 
-		if data, err := os.Readlink("/proc/" + pid + "/ns/pid"); err == nil {
-			fmt.Sscanf(data, "pid:[%d]\n", &key.PidNS)
+	for _, arg := range allowedArgs {
+		keyArgs := newPathKey(uint32(4026533709), uint32(4026532833), arg)
+		err = be.BPFArgsMap.Put(keyArgs, valArgs)
+		if err != nil {
+			fmt.Println("args map error ", err)
 		}
+		fmt.Printf("Size of mapKey struct: %d bytes\n", unsafe.Sizeof(keyArgs))
+		fmt.Printf("Key PID: %d, MNTID: %d, Path: %s\n", keyArgs.Pid, keyArgs.Mntid, keyArgs.Path[:])
+	}
 
-		if data, err := os.Readlink("/proc/" + pid + "/ns/mnt"); err == nil {
-			fmt.Sscanf(data, "mnt:[%d]\n", &key.MntNS)
-		}
-
-		cmap[key] = c
+	err = be.BPFPathMap.Put(keyPath, valPath)
+	if err != nil {
+		fmt.Println("path map error ", err)
 	}
 
 	// fn := "sys_execve"
-
-	stopper := make(chan os.Signal, 1)
-	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatal(err)
-	}
-
-	objs := bpfObjects{}
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
-
-	kpa, err := link.AttachLSM(link.LSMOptions{Program: objs.EnforceBprm})
+	kpa, err := link.AttachLSM(link.LSMOptions{Program: be.obj.EnforceBprm})
 	if err != nil {
 		log.Fatalf("opening kprobe: %s", err)
 	}
 	//execve execveat
-	kpa1, err := link.Kprobe("sys_execve", objs.KprobeExecve, &link.KprobeOptions{})
+	kpa1, err := link.Kprobe("sys_execve", be.obj.KprobeExecve, &link.KprobeOptions{})
 	if err != nil {
 		log.Fatalf("opening kprobe: %s", err)
 	}
 	defer kpa.Close()
 	defer kpa1.Close()
-
-	// create container map for nginx contianer and inner map
-
-	rd, err := ringbuf.NewReader(objs.Events)
+	stopper := make(chan os.Signal, 1)
+	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
+	rd, err := ringbuf.NewReader(be.obj.Events)
 	if err != nil {
 		log.Fatalf("opening ringbuf reader: %s", err)
 	}
+
 	defer rd.Close()
 
 	go func() {
@@ -146,6 +150,7 @@ func main() {
 	}()
 
 	log.Println("Waiting for events..")
+
 	var event eventBPF
 	for {
 		record, err := rd.Read()
@@ -163,19 +168,14 @@ func main() {
 			continue
 		}
 
-		key := nskey{
-			PidNS: event.PidNS,
-			MntNS: event.MntNS,
-		}
-
-		if val, ok := cmap[key]; ok {
-			val.ProcessPID = event.Pid
-			val.ProcessName = unix.ByteSliceToString(event.Comm[:])
-			ipBytes := make([]byte, 4)
-			// Fill the byte slice with the IP address in big-endian format.
-			binary.LittleEndian.PutUint32(ipBytes, event.Daddr)
-
-		}
-
 	}
+
+	//delete maps
+	// if be.BPFArgsMap != nil {
+	// 	if err = be.BPFArgsMap.Close(); err != nil {
+	// 		fmt.Println("error :", err)
+	// 	}
+	// }
 }
+
+// bash-41120   [003] ...11  4950.223822: bpf_trace_printk:  source = /usr/bin/bash  path = /usr/bin/apt

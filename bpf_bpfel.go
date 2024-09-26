@@ -22,6 +22,13 @@ type bpfArgVal struct{ ArgsArray [10][20]int8 }
 
 type bpfBufsT struct{ Buf [32768]uint8 }
 
+type bpfMapkey struct {
+	Pid   uint32
+	Mntid uint32
+	Path  [255]int8
+	_     [1]byte
+}
+
 // loadBpf returns the embedded CollectionSpec for bpf.
 func loadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
@@ -71,10 +78,12 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
+	ArgsMap    *ebpf.MapSpec `ebpf:"args_map"`
 	Bufs       *ebpf.MapSpec `ebpf:"bufs"`
 	BufsOffset *ebpf.MapSpec `ebpf:"bufs_offset"`
 	CountMap   *ebpf.MapSpec `ebpf:"count_map"`
 	Events     *ebpf.MapSpec `ebpf:"events"`
+	PathMap    *ebpf.MapSpec `ebpf:"path_map"`
 	Values     *ebpf.MapSpec `ebpf:"values"`
 }
 
@@ -97,19 +106,23 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
+	ArgsMap    *ebpf.Map `ebpf:"args_map"`
 	Bufs       *ebpf.Map `ebpf:"bufs"`
 	BufsOffset *ebpf.Map `ebpf:"bufs_offset"`
 	CountMap   *ebpf.Map `ebpf:"count_map"`
 	Events     *ebpf.Map `ebpf:"events"`
+	PathMap    *ebpf.Map `ebpf:"path_map"`
 	Values     *ebpf.Map `ebpf:"values"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.ArgsMap,
 		m.Bufs,
 		m.BufsOffset,
 		m.CountMap,
 		m.Events,
+		m.PathMap,
 		m.Values,
 	)
 }

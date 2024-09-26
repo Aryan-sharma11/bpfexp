@@ -22,6 +22,7 @@
 #define TASK_COMM_LEN 80
 #define MAX_ENTRIES 10240
 #define PATHNAME_SIZE	 256
+#define EPERM 13
 struct outer_key {
   u32 pid_ns;
   u32 mnt_ns;
@@ -61,17 +62,6 @@ struct {
 } count_map SEC(".maps");
 
 
-// struct outer_hash {
-//   __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-//   __uint(max_entries, 256);
-//   __uint(key_size, sizeof(struct outer_key));
-//   __uint(value_size, sizeof(u32));
-//   __uint(pinning, LIBBPF_PIN_BY_NAME);
-// };
-
-// struct outer_hash kubearmor_containers SEC(".maps");
-// struct outer_hash kubearmor_arguments SEC(".maps");
-
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 typedef struct {
@@ -82,7 +72,26 @@ typedef struct {
   u32 daddr;
 } event;
 
+struct mapkey{
+  u32 pid; 
+  u32 mntid; 
+  char path[255];
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 100);
+    __type(key, struct mapkey);
+    __type(value, u8);  // The value is a single byte (u8)
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} path_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 100);
+    __type(key, struct mapkey);  // Composite key of mntid + pid + somepath
+    __type(value, u8); 
+    __uint(pinning, LIBBPF_PIN_BY_NAME);            // Value is a u8 integer
+} args_map SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -169,17 +178,13 @@ static __always_inline int save_str_arr_to_buffer( struct arg_Key key, const cha
     return 0;
 }
 
+
 SEC("kprobe/__x64_sys_execve")
 int kprobe__execve(struct pt_regs *ctx)
-{    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-
-      struct outer_key okey ;
-      okey.pid_ns = 4026533421;
-      okey.mnt_ns = 4026533419;
-
+{   
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
       u32 mnt_ns_try = 4026533222;
-      u32 pid_ns_try = 4026533224 ;
-      
+      u32 pid_ns_try = 4026533612 ;
       
       u32 pid_ns = BPF_CORE_READ(t, nsproxy, pid_ns_for_children, ns).inum;
       u32 mnt_ns = BPF_CORE_READ(t, nsproxy, mnt_ns, ns).inum;
@@ -196,10 +201,8 @@ int kprobe__execve(struct pt_regs *ctx)
 
      keyArg.pid = bpf_get_current_pid_tgid() >> 32;
      keyArg.tgid = bpf_get_current_pid_tgid();  
-
-    if( pid_ns == pid_ns_try){
      save_str_arr_to_buffer(keyArg,(const char *const *)argv);
-    }
+    
     return 0;
 }
 
@@ -208,30 +211,19 @@ SEC("lsm/bprm_check_security")
 int BPF_PROG(enforce_bprm, struct linux_binprm *bprm, int ret) {
 
   //create map 
-   struct outer_key okey ;
-      okey.pid_ns = 4026533421;
-      okey.mnt_ns = 4026533419;
-
-
-
+ 
   struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-
 
   u32 pid_ns = BPF_CORE_READ(t, nsproxy, pid_ns_for_children, ns).inum;
   u32 mnt_ns = BPF_CORE_READ(t, nsproxy, mnt_ns, ns).inum;
   int x;
   unsigned long a_start; 
-     u32 mnt_ns_try = 4026533222;
-      u32 pid_ns_try = 4026533224 ;
   if (pid_ns == PROC_PID_INIT_INO) {
     return 0;
   }
 
-  struct mm_struct *mm_struct1;
-  unsigned long arg_start;
-  unsigned long arg_end;
   char srcval[MAX_STRING_SIZE];
-  mm_struct1 = BPF_CORE_READ(t , mm);
+
   unsigned int num = BPF_CORE_READ(bprm , argc);
 
   bufs_t *bufs_p = get_buffer(DATA_BUF_TYPE);
@@ -246,18 +238,12 @@ int BPF_PROG(enforce_bprm, struct linux_binprm *bprm, int ret) {
     if(data == NULL){
         return 0;
     }
-    char path[MAX_STRING_SIZE];
-
-    int jump = 6;
-    
-    char temp [30];
+  
     struct arg_Key keyArg ;
-
      keyArg.pid = bpf_get_current_pid_tgid() >> 32;
      keyArg.tgid = bpf_get_current_pid_tgid();
-   
-  
-      struct argVal *val ;
+
+    struct argVal *val ;
     val = bpf_map_lookup_elem(&values, &keyArg);
     if(num < 0) {
       return 0;
@@ -265,10 +251,30 @@ int BPF_PROG(enforce_bprm, struct linux_binprm *bprm, int ret) {
     if(num > 10){
       return 0;
     }
+    struct mapkey try, next_key;
+
     if (val) {
       // #pragma unroll 
-      for( int i = 0 ; i< num && i<10; i++ ){
+      for( int i = 1 ; i< num && i<10; i++ ){
           bpf_printk("Argurment %d : %s\n", i,  val->argsArray[i]);
+          struct mapkey arg;
+          __builtin_memset(&arg, 0, sizeof(arg));
+          arg.pid = pid_ns;
+          arg.mntid = mnt_ns;
+          // bpf_probe_read
+          bpf_probe_read_str(arg.path, sizeof(arg.path),  val->argsArray[i]);
+          // bpf_probe_read(arg.path, sizeof(arg.path), val->argsArray[i]);
+          unsigned int *x = bpf_map_lookup_elem(&args_map ,&arg);
+          bpf_printk("arg path =%s  x = %u",arg.path, *x);
+          bpf_printk("arg size %d", sizeof(struct mapkey) );
+          bpf_printk("arg  %u  , %u ", arg.mntid , arg.pid );
+          
+          if(x){
+            bpf_printk("argument matched");
+          } else {
+            bpf_printk("argument not matched");
+            return -EPERM;
+          }  
       }
 
     }
@@ -276,18 +282,5 @@ int BPF_PROG(enforce_bprm, struct linux_binprm *bprm, int ret) {
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
 
-  event *task_info;
-
-  task_info = bpf_ringbuf_reserve(&events, sizeof(event), 0);
-  if (!task_info) {
-    return 0;
-  }
-
-  task_info->pid = get_task_ns_tgid(t);
-  task_info->pid_ns = pid_ns;
-  task_info->mnt_ns = mnt_ns;
-  bpf_get_current_comm(&task_info->comm, sizeof(task_info->comm));
-  
-  bpf_ringbuf_submit(task_info, 0);
   return 0;
 }
