@@ -33,7 +33,7 @@ struct arg_Key{
   u32 tgid;
 };
 struct argVal{
-  char argsArray[10][20];
+  char argsArray[20][256];
 };
 struct {
  __uint(type, BPF_MAP_TYPE_HASH);
@@ -77,6 +77,12 @@ struct mapkey{
   u32 mntid; 
   char path[255];
 };
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);  // Adjust max_entries based on expected usage
+    __type(key, u32);
+    __type(value, struct argVal);  // Store the args in this struct
+} cmd_args SEC(".maps");
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 100);
@@ -148,33 +154,34 @@ static __always_inline bufs_t *get_buffer(int buf_type)
 static __always_inline int save_str_arr_to_buffer( struct arg_Key key, const char __user *const __user *ptr)
 
 {
-  int *j;
-  int z = 0 ;
-  bpf_map_update_elem(&count_map, &z , &z , BPF_ANY);
-  struct argVal  val;
-    #pragma unroll
-    for (int i = 0; i < 5; i++)
+
+  u32 arg_k = 0;
+  // bpf_printk("int execve ");
+  struct argVal  *val = bpf_map_lookup_elem(&cmd_args, &arg_k);
+  if (val == NULL){
+     return 0;
+  }
+  bpf_printk("int execve ");
+    #pragma unroll 
+    for (int i = 0; i < 20; i++)
     {   
-        j = bpf_map_lookup_elem(&count_map, &z);
-          if (!j){
-            bpf_printk("Failed to loarray \n");
-            break; 
-          }
+  
         const char *const *curr_ptr = (void *)&ptr[i] ;
         const char *argp = NULL;
         bpf_probe_read(&argp, sizeof(argp), curr_ptr);
-        int k = *j;
-        if (*j < 0 || *j >= 4)
+        int k = i;
+        if (argp)
+          {
+            bpf_probe_read_str(val->argsArray[i], sizeof(val->argsArray[0]), argp);
+            bpf_printk("adding args to map %s",val->argsArray[k]);
+            bpf_map_update_elem(&values, &key, val, BPF_ANY);
+          }
+          else {
             break;
-          if (argp)
-              {
-                bpf_probe_read_str(val.argsArray[k], sizeof(val.argsArray[0]), argp);
-                 k++ ; // Increment the index
-              }
-        *j = k;
-        bpf_map_update_elem(&count_map, &z, j, BPF_ANY);
+          }
+
     }
-    bpf_map_update_elem(&values, &key, &val, BPF_ANY);
+
     return 0;
 }
 
@@ -183,11 +190,9 @@ SEC("kprobe/__x64_sys_execve")
 int kprobe__execve(struct pt_regs *ctx)
 {   
     struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-      u32 mnt_ns_try = 4026533222;
-      u32 pid_ns_try = 4026533612 ;
       
-      u32 pid_ns = BPF_CORE_READ(t, nsproxy, pid_ns_for_children, ns).inum;
-      u32 mnt_ns = BPF_CORE_READ(t, nsproxy, mnt_ns, ns).inum;
+    u32 pid_ns = BPF_CORE_READ(t, nsproxy, pid_ns_for_children, ns).inum;
+    u32 mnt_ns = BPF_CORE_READ(t, nsproxy, mnt_ns, ns).inum;
 
     struct pt_regs *ctx2 = (struct pt_regs *)PT_REGS_PARM1(ctx);
     unsigned long argv = READ_KERN(PT_REGS_PARM2(ctx2));
@@ -198,6 +203,7 @@ int kprobe__execve(struct pt_regs *ctx)
     if (bufs_p == NULL)
         return 0;
     struct arg_Key keyArg ;
+    bpf_printk("in execve kprobe");
 
      keyArg.pid = bpf_get_current_pid_tgid() >> 32;
      keyArg.tgid = bpf_get_current_pid_tgid();  
@@ -216,7 +222,6 @@ int BPF_PROG(enforce_bprm, struct linux_binprm *bprm, int ret) {
 
   u32 pid_ns = BPF_CORE_READ(t, nsproxy, pid_ns_for_children, ns).inum;
   u32 mnt_ns = BPF_CORE_READ(t, nsproxy, mnt_ns, ns).inum;
-  int x;
   unsigned long a_start; 
   if (pid_ns == PROC_PID_INIT_INO) {
     return 0;
@@ -265,16 +270,16 @@ int BPF_PROG(enforce_bprm, struct linux_binprm *bprm, int ret) {
           bpf_probe_read_str(arg.path, sizeof(arg.path),  val->argsArray[i]);
           // bpf_probe_read(arg.path, sizeof(arg.path), val->argsArray[i]);
           unsigned int *x = bpf_map_lookup_elem(&args_map ,&arg);
-          bpf_printk("arg path =%s  x = %u",arg.path, *x);
-          bpf_printk("arg size %d", sizeof(struct mapkey) );
-          bpf_printk("arg  %u  , %u ", arg.mntid , arg.pid );
-          
           if(x){
             bpf_printk("argument matched");
           } else {
             bpf_printk("argument not matched");
             return -EPERM;
-          }  
+          }
+          // }  
+          // bpf_printk("arg path =%s  x = %u",arg.path, *x);
+          // bpf_printk("arg size %d", sizeof(struct mapkey) );
+          // bpf_printk("arg  %u  , %u ", arg.mntid , arg.pid );
       }
 
     }

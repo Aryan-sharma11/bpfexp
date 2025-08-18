@@ -18,7 +18,7 @@ type bpfArgKey struct {
 	Tgid uint32
 }
 
-type bpfArgVal struct{ ArgsArray [10][20]int8 }
+type bpfArgVal struct{ ArgsArray [20][256]int8 }
 
 type bpfBufsT struct{ Buf [32768]uint8 }
 
@@ -81,6 +81,7 @@ type bpfMapSpecs struct {
 	ArgsMap    *ebpf.MapSpec `ebpf:"args_map"`
 	Bufs       *ebpf.MapSpec `ebpf:"bufs"`
 	BufsOffset *ebpf.MapSpec `ebpf:"bufs_offset"`
+	CmdArgs    *ebpf.MapSpec `ebpf:"cmd_args"`
 	CountMap   *ebpf.MapSpec `ebpf:"count_map"`
 	Events     *ebpf.MapSpec `ebpf:"events"`
 	PathMap    *ebpf.MapSpec `ebpf:"path_map"`
@@ -109,6 +110,7 @@ type bpfMaps struct {
 	ArgsMap    *ebpf.Map `ebpf:"args_map"`
 	Bufs       *ebpf.Map `ebpf:"bufs"`
 	BufsOffset *ebpf.Map `ebpf:"bufs_offset"`
+	CmdArgs    *ebpf.Map `ebpf:"cmd_args"`
 	CountMap   *ebpf.Map `ebpf:"count_map"`
 	Events     *ebpf.Map `ebpf:"events"`
 	PathMap    *ebpf.Map `ebpf:"path_map"`
@@ -120,6 +122,7 @@ func (m *bpfMaps) Close() error {
 		m.ArgsMap,
 		m.Bufs,
 		m.BufsOffset,
+		m.CmdArgs,
 		m.CountMap,
 		m.Events,
 		m.PathMap,

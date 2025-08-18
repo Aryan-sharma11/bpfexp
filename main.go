@@ -177,5 +177,3 @@ func main() {
 	// 	}
 	// }
 }
-
-// bash-41120   [003] ...11  4950.223822: bpf_trace_printk:  source = /usr/bin/bash  path = /usr/bin/apt
