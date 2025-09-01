@@ -1,179 +1,117 @@
-//go:build linux
-// +build linux
-
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"unsafe"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/cilium/ebpf/ringbuf"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf sample.bpf.c -target bpfel -type event -- -I/usr/include/ -O2 -g -D__TARGET_ARCH_x86 -fno-stack-protector
-
-type BPFEnforcer struct {
-	InnerMapSpec *ebpf.MapSpec
-	// InnerMapSpec            *ebpf.MapSpec
-	BPFPathMap *ebpf.Map
-	BPFArgsMap *ebpf.Map
-	obj        bpfObjects
-}
-type eventBPF struct {
-	Pid   uint32
-	PidNS uint32
-	MntNS uint32
-	Comm  [80]uint8
-	Daddr uint32
-}
-
-// nskey Structure acts as an Identifier for containers
-
-type mapKey struct {
-	Pid   uint32
-	Mntid uint32
-	Path  [255]byte
-	_     byte
-}
-
-func newPathKey(pid uint32, mnt_ns uint32, path string) mapKey {
-	var key mapKey
-	key.Pid = pid
-	key.Mntid = mnt_ns
-	copy(key.Path[:], path)
-	// if len(path) < 255 {
-	// 	key.Path[len(path)] = 0 // Manually add null termination
-	// }
-	return key
-}
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf sample.bpf.c -- -I/usr/include -I/usr/include/x86_64-linux-gnu
 
 func main() {
-	y := uint32(unsafe.Sizeof(mapKey{}))
-	// populatemap()
-	be := BPFEnforcer{}
-	var err error
-	be.BPFPathMap, err = ebpf.NewMapWithOptions(&ebpf.MapSpec{
-		Type:       ebpf.Hash,
-		KeySize:    y,
-		ValueSize:  1,
-		MaxEntries: 100,
-		Name:       "path_map",
-		Pinning:    ebpf.PinByName,
-	}, ebpf.MapOptions{
-		PinPath: "/sys/fs/bpf/",
-	})
+	// Load the compiled eBPF objects.
+	objs := bpfObjects{}
+	if err := loadBpfObjects(&objs, nil); err != nil {
+		log.Fatalf("loading objects: %s", err)
+	}
+	defer objs.Close()
+
+	// Get a list of all network interfaces.
+	ifaces, err := net.Interfaces()
 	if err != nil {
-		fmt.Println("error loading path_map ", err)
+		log.Fatalf("failed to get network interfaces: %v", err)
 	}
+	var links []link.Link
 
-	be.BPFArgsMap, err = ebpf.NewMapWithOptions(&ebpf.MapSpec{
-		Type:       ebpf.Hash,
-		KeySize:    y,
-		ValueSize:  1,
-		MaxEntries: 100,
-		Name:       "args_map",
-		Pinning:    ebpf.PinByName,
-	}, ebpf.MapOptions{
-		PinPath: "/sys/fs/bpf/",
-	})
-	if err != nil {
-		fmt.Println("error loading args_map ", err)
-	}
-
-	if err := loadBpfObjects(&be.obj, &ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{
-			PinPath: "/sys/fs/bpf/",
-		},
-	}); err != nil {
-		fmt.Println("error loading objects", err)
-	}
-	keyPath := newPathKey(uint32(4026532833), uint32(4026533709), "/usr/bin/apt")
-
-	// keyArgs := newPathKey(uint32(4026532833), uint32(4026533709), "update")
-	valPath := uint8(1)
-	var valArgs uint8 = 1
-	//pid = 4026532833  mntid = 4026533709
-
-	allowedArgs := [3]string{"-u", "-m", "helloworld"}
-
-	for _, arg := range allowedArgs {
-		keyArgs := newPathKey(uint32(4026533709), uint32(4026532833), arg)
-		err = be.BPFArgsMap.Put(keyArgs, valArgs)
-		if err != nil {
-			fmt.Println("args map error ", err)
+	for _, iface := range ifaces {
+		// Skip loopback interfaces and interfaces that are down.
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
 		}
-		fmt.Printf("Size of mapKey struct: %d bytes\n", unsafe.Sizeof(keyArgs))
-		fmt.Printf("Key PID: %d, MNTID: %d, Path: %s\n", keyArgs.Pid, keyArgs.Mntid, keyArgs.Path[:])
+
+		l, err := link.AttachTCX(link.TCXOptions{
+			Interface: iface.Index,
+			Program:   objs.HandleIngress,
+			Attach:    ebpf.AttachTCXIngress,
+		})
+		if err != nil {
+			log.Printf("could not attach ingress program to %s: %s", iface.Name, err)
+			continue
+		}
+		links = append(links, l) // for cleanup later
+		log.Printf("Attached INGRESS on iface %q (index %d)", iface.Name, iface.Index)
+
+		// Attach the egress TC program.
+		l2, err := link.AttachTCX(link.TCXOptions{
+			Interface: iface.Index,
+			Program:   objs.HandleEgress,
+			Attach:    ebpf.AttachTCXEgress,
+		})
+		if err != nil {
+			log.Printf("could not attach egress %s , %v", iface.Name, err)
+			continue
+		}
+		links = append(links, l2)
+
+		log.Printf("Attached EGRESS on iface %s (index %d)", iface.Name, iface.Index)
 	}
 
-	err = be.BPFPathMap.Put(keyPath, valPath)
-	if err != nil {
-		fmt.Println("path map error ", err)
-	}
-
-	// fn := "sys_execve"
-	kpa, err := link.AttachLSM(link.LSMOptions{Program: be.obj.EnforceBprm})
-	if err != nil {
-		log.Fatalf("opening kprobe: %s", err)
-	}
-	//execve execveat
-	kpa1, err := link.Kprobe("sys_execve", be.obj.KprobeExecve, &link.KprobeOptions{})
-	if err != nil {
-		log.Fatalf("opening kprobe: %s", err)
-	}
-	defer kpa.Close()
-	defer kpa1.Close()
-	stopper := make(chan os.Signal, 1)
-	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-	rd, err := ringbuf.NewReader(be.obj.Events)
-	if err != nil {
-		log.Fatalf("opening ringbuf reader: %s", err)
-	}
-
-	defer rd.Close()
-
-	go func() {
-		<-stopper
-
-		if err := rd.Close(); err != nil {
-			log.Fatalf("closing ringbuf reader: %s", err)
+	defer func() {
+		for _, l := range links {
+			l.Close()
 		}
 	}()
 
-	log.Println("Waiting for events..")
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-	var event eventBPF
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	log.Println("Monitoring traffic. Press Ctrl+C to exit.")
+
+	var lastIngressBytes, lastEgressBytes uint64
+
 	for {
-		record, err := rd.Read()
-		if err != nil {
-			if errors.Is(err, ringbuf.ErrClosed) {
-				log.Println("Received signal, exiting..")
-				return
+		select {
+		case <-ticker.C:
+			var perCpuValues []uint64
+			var ingressBytes, egressBytes uint64
+
+			if err := objs.TrafficStats.Lookup(uint32(0), &perCpuValues); err != nil {
+				log.Printf("Error reading ingress stats: %v", err)
+				continue
 			}
-			log.Printf("reading from reader: %s", err)
-			continue
-		}
+			for _, val := range perCpuValues {
+				ingressBytes += val
+			}
 
-		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event); err != nil {
-			log.Printf("parsing ringbuf event: %s", err)
-			continue
-		}
+			if err := objs.TrafficStats.Lookup(uint32(1), &perCpuValues); err != nil {
+				log.Printf("Error reading egress stats: %v", err)
+				continue
+			}
+			for _, val := range perCpuValues {
+				egressBytes += val
+			}
 
+			ingressRate := float64(ingressBytes-lastIngressBytes) / 1024.0
+			egressRate := float64(egressBytes-lastEgressBytes) / 1024.0
+
+			fmt.Printf("\rTotal Ingress: %.2f KB/s | Total Egress: %.2f KB/s ", ingressRate, egressRate)
+
+			lastIngressBytes = ingressBytes
+			lastEgressBytes = egressBytes
+
+		case <-stop:
+			fmt.Println("\nReceived signal, detaching programs and exiting.")
+			return
+		}
 	}
-
-	//delete maps
-	// if be.BPFArgsMap != nil {
-	// 	if err = be.BPFArgsMap.Close(); err != nil {
-	// 		fmt.Println("error :", err)
-	// 	}
-	// }
 }
