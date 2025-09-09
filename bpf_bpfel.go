@@ -8,9 +8,24 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type bpfMapKey struct {
+	_         structs.HostLayout
+	Ip        uint32
+	Direction uint8
+	_         [3]byte
+}
+
+type bpfMapVal struct {
+	_           structs.HostLayout
+	TimestampNs uint64
+	PktLenKb    uint64
+	PktLenBytes uint64
+}
 
 // loadBpf returns the embedded CollectionSpec for bpf.
 func loadBpf() (*ebpf.CollectionSpec, error) {
@@ -62,6 +77,7 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
+	PktInfo      *ebpf.MapSpec `ebpf:"pkt_info"`
 	TrafficStats *ebpf.MapSpec `ebpf:"traffic_stats"`
 }
 
@@ -69,6 +85,8 @@ type bpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfVariableSpecs struct {
+	PacketKey *ebpf.VariableSpec `ebpf:"packet_key"`
+	PacketVal *ebpf.VariableSpec `ebpf:"packet_val"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -91,11 +109,13 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
+	PktInfo      *ebpf.Map `ebpf:"pkt_info"`
 	TrafficStats *ebpf.Map `ebpf:"traffic_stats"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.PktInfo,
 		m.TrafficStats,
 	)
 }
@@ -104,6 +124,8 @@ func (m *bpfMaps) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfVariables struct {
+	PacketKey *ebpf.Variable `ebpf:"packet_key"`
+	PacketVal *ebpf.Variable `ebpf:"packet_val"`
 }
 
 // bpfPrograms contains all programs after they have been loaded into the kernel.

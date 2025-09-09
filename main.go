@@ -16,14 +16,15 @@ import (
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf sample.bpf.c -- -I/usr/include -I/usr/include/x86_64-linux-gnu
 
 func main() {
-	// Load the compiled eBPF objects.
+
+	//loading objects
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
 		log.Fatalf("loading objects: %s", err)
 	}
 	defer objs.Close()
 
-	// Get a list of all network interfaces.
+	// list of interfaces
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		log.Fatalf("failed to get network interfaces: %v", err)
@@ -35,6 +36,35 @@ func main() {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 			continue
 		}
+		//////////////////////
+		x, err := net.InterfaceByIndex(iface.Index)
+		if err != nil {
+			log.Printf("Unable to find interface with index %d: %v", x, err)
+			return
+		}
+
+		// Get all addresses assigned to that interface
+		addrs, err := x.Addrs()
+		if err != nil {
+			log.Printf("Unable to get addresses for interface %s: %v", x.Name, err)
+			continue
+		}
+
+		fmt.Printf("IP Addresses for interface '%s' (index %d):\n", x.Name, x.Index)
+
+		if len(addrs) == 0 {
+			fmt.Println("  -> No IP addresses found.")
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			// Type-assert the address to see if it's an IP network
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				ip = ipnet.IP
+				fmt.Printf("  -> %s\n", ip.String())
+			}
+		}
+		/////////////////////
 
 		l, err := link.AttachTCX(link.TCXOptions{
 			Interface: iface.Index,
