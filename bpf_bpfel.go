@@ -13,17 +13,14 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type bpfMapKey struct {
+type bpfRuleMapKey struct {
 	_         structs.HostLayout
-	Ip        uint32
 	Direction uint8
-	_         [3]byte
 }
 
-type bpfMapVal struct {
+type bpfRuleMapVal struct {
 	_           structs.HostLayout
-	TimestampNs uint64
-	PktLenKb    uint64
+	Duration    uint64
 	PktLenBytes uint64
 }
 
@@ -77,7 +74,7 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	PktInfo      *ebpf.MapSpec `ebpf:"pkt_info"`
+	RuleMap      *ebpf.MapSpec `ebpf:"rule_map"`
 	TrafficStats *ebpf.MapSpec `ebpf:"traffic_stats"`
 }
 
@@ -85,8 +82,12 @@ type bpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfVariableSpecs struct {
-	PacketKey *ebpf.VariableSpec `ebpf:"packet_key"`
-	PacketVal *ebpf.VariableSpec `ebpf:"packet_val"`
+	FirstPacketTsEgress  *ebpf.VariableSpec `ebpf:"_first_packet_ts_egress"`
+	FirstPacketTsIngress *ebpf.VariableSpec `ebpf:"_first_packet_ts_ingress"`
+	TotalBytesEgress     *ebpf.VariableSpec `ebpf:"_total_bytes_egress"`
+	TotalBytesIngress    *ebpf.VariableSpec `ebpf:"_total_bytes_ingress"`
+	RuleKey              *ebpf.VariableSpec `ebpf:"rule_key"`
+	RuleVal              *ebpf.VariableSpec `ebpf:"rule_val"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -109,13 +110,13 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	PktInfo      *ebpf.Map `ebpf:"pkt_info"`
+	RuleMap      *ebpf.Map `ebpf:"rule_map"`
 	TrafficStats *ebpf.Map `ebpf:"traffic_stats"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
-		m.PktInfo,
+		m.RuleMap,
 		m.TrafficStats,
 	)
 }
@@ -124,8 +125,12 @@ func (m *bpfMaps) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfVariables struct {
-	PacketKey *ebpf.Variable `ebpf:"packet_key"`
-	PacketVal *ebpf.Variable `ebpf:"packet_val"`
+	FirstPacketTsEgress  *ebpf.Variable `ebpf:"_first_packet_ts_egress"`
+	FirstPacketTsIngress *ebpf.Variable `ebpf:"_first_packet_ts_ingress"`
+	TotalBytesEgress     *ebpf.Variable `ebpf:"_total_bytes_egress"`
+	TotalBytesIngress    *ebpf.Variable `ebpf:"_total_bytes_ingress"`
+	RuleKey              *ebpf.Variable `ebpf:"rule_key"`
+	RuleVal              *ebpf.Variable `ebpf:"rule_val"`
 }
 
 // bpfPrograms contains all programs after they have been loaded into the kernel.

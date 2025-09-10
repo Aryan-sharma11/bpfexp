@@ -14,6 +14,10 @@ import (
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf sample.bpf.c -- -I/usr/include -I/usr/include/x86_64-linux-gnu
+type bpfRule struct {
+	duration uint64
+	bytes    uint64
+}
 
 func main() {
 
@@ -98,6 +102,20 @@ func main() {
 			l.Close()
 		}
 	}()
+	rule := bpfRule{
+		duration: 120 * 1e9,
+		bytes:    2 * 1024 * 1024,
+	}
+	key := uint8(111) // DIR_INGRESS
+	err = objs.RuleMap.Update(key, rule, ebpf.UpdateAny)
+	if err != nil {
+		log.Printf("updating rule map: %s", err)
+	}
+	key = uint8(112) // DIR_INGRESS
+	err = objs.RuleMap.Update(key, rule, ebpf.UpdateAny)
+	if err != nil {
+		log.Printf("updating rule map egress: %s", err)
+	}
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
