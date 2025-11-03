@@ -121,7 +121,7 @@ int handle_ingress(struct __sk_buff *skb)
     if (_first_packet_ts_ingress == -1)
     {
         _first_packet_ts_ingress = bpf_ktime_get_ns();
-        bpf_printk("First packet timestamp set to %llu\n", _first_packet_ts_ingress);
+        bpf_printk("Ingress First packet timestamp set to %llu\n", _first_packet_ts_ingress);
     }
     else
     {
@@ -133,13 +133,13 @@ int handle_ingress(struct __sk_buff *skb)
             u64 current_ts = bpf_ktime_get_ns();
             if ((current_ts - _first_packet_ts_ingress) > rval->duration)
             {
-                bpf_printk("Resetting counters as duration exceeded %llu ns\n", rval->duration);
+                bpf_printk("Ingress Resetting counters as duration exceeded %llu ns\n", rval->duration);
                 _first_packet_ts_ingress = current_ts;
                 _total_bytes_ingress = 0;
             }
             else
             {
-                _total_bytes_ingress += skb->len;
+                __sync_fetch_and_add(&_total_bytes_ingress, skb->len);
                 bpf_printk("new total bytes ingress %llu\n", _total_bytes_ingress);
             }
             if (_total_bytes_ingress > rval->pkt_len_bytes)
@@ -258,7 +258,7 @@ int handle_egress(struct __sk_buff *skb)
     if (_first_packet_ts_egress == -1)
     {
         _first_packet_ts_egress = bpf_ktime_get_ns();
-        bpf_printk("First packet timestamp set to %llu\n", _first_packet_ts_egress);
+        bpf_printk(" Egress First packet timestamp set to %llu\n", _first_packet_ts_egress);
     }
     else
     {
@@ -270,13 +270,14 @@ int handle_egress(struct __sk_buff *skb)
             u64 current_ts = bpf_ktime_get_ns();
             if ((current_ts - _first_packet_ts_egress) > rval->duration)
             {
-                bpf_printk("Resetting counters as duration exceeded %llu ns\n", rval->duration);
+                bpf_printk("Egress Resetting counters as duration exceeded %llu ns\n", rval->duration);
                 _first_packet_ts_egress = current_ts;
                 _total_bytes_egress = 0;
             }
             else
             {
-                _total_bytes_egress += skb->len;
+                __sync_fetch_and_add(&_total_bytes_egress, skb->len);
+
                 bpf_printk("new total bytes egress %llu\n", _total_bytes_egress);
             }
             if (_total_bytes_egress > rval->pkt_len_bytes)
